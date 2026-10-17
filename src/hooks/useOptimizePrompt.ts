@@ -2,19 +2,18 @@
 
 import { useCallback, useRef, useState } from 'react';
 
-import { splitOptimizedOutput } from '@/lib/delimiter';
-import { scorePrompt } from '@/lib/promptScore';
+import {
+  createSplitStreamCache,
+  splitOptimizedOutput,
+  splitOptimizedOutputStreaming,
+} from '@/lib/delimiter';
+import { createThrottle } from '@/lib/throttle';
 import {
   postOptimizeStream,
   postOptimizeSync,
   readUint8Stream,
 } from '@/lib/client/optimizeApi';
 import type { Mode, OptimizeVersion, ProviderId } from '@/lib/types';
-import type { OptimizationLogInsert } from '@/lib/client/optimizationLogs';
-
-async function safeLogOptimization(insert: OptimizationLogInsert) {
-  // Client-side logging removed in favor of server-side logging
-}
 
 interface OptimizeState {
   optimizedText: string;
@@ -24,7 +23,6 @@ interface OptimizeState {
   sessionId: string;
   provider: ProviderId;
   model: string;
-  storedScore: number | null;
   isLoading: boolean;
   error: string | null;
 }
@@ -44,7 +42,6 @@ function initialState(): OptimizeState {
     sessionId: '',
     provider: DEFAULT_PROVIDER,
     model: '',
-    storedScore: null,
     isLoading: false,
     error: null,
   };
@@ -87,7 +84,6 @@ export function useOptimizePrompt() {
         sessionId,
         provider: args.provider,
         model: '',
-        storedScore: null, // reset so live score animates on re-optimization
         isLoading: true,
         error: null,
       }));
@@ -117,9 +113,6 @@ export function useOptimizePrompt() {
             isLoading: false,
           }));
 
-          // Client-side logging removed
-          // void safeLogOptimization({ ... });
-
           return;
         }
 
@@ -136,30 +129,50 @@ export function useOptimizePrompt() {
         });
 
         let buffer = '';
+        const splitCache = createSplitStreamCache();
+        const flushStream = createThrottle(140);
+
+        const applyBuffer = () => {
+          const { optimizedText, explanation, changes } = splitOptimizedOutputStreaming(buffer, splitCache);
+          setState((s) => {
+            if (
+              s.rawText === buffer &&
+              s.optimizedText === optimizedText &&
+              s.explanation === explanation &&
+              s.changes === changes &&
+              s.provider === provider &&
+              s.model === model
+            ) {
+              return s;
+            }
+            return {
+              ...s,
+              rawText: buffer,
+              optimizedText,
+              explanation,
+              changes,
+              provider,
+              model,
+            };
+          });
+        };
 
         await readUint8Stream(reader, (chunkText) => {
           buffer += chunkText;
-          const { optimizedText, explanation, changes } = splitOptimizedOutput(buffer);
-          setState((s) => ({
-            ...s,
-            rawText: buffer,
-            optimizedText,
-            explanation,
-            changes,
-            provider,
-            model,
-          }));
+          flushStream(applyBuffer);
         });
 
+        applyBuffer();
+
         const { optimizedText, explanation, changes } = splitOptimizedOutput(buffer);
-        // Client-side logging removed
-        // void safeLogOptimization({ ... });
 
-        // Update server-inserted row with prompt_score (streaming inserts at start before we have result)
-        // Moved to server-side onFinish
-        // void fetch('/api/optimization-log', ...);
-
-        setState((s) => ({ ...s, isLoading: false }));
+        setState((s) => ({
+          ...s,
+          isLoading: false,
+          optimizedText,
+          explanation,
+          changes,
+        }));
       } catch (err) {
         if (controller.signal.aborted) return;
         setState((s) => ({
@@ -181,7 +194,6 @@ export function useOptimizePrompt() {
     sessionId: string;
     provider: ProviderId;
     model: string;
-    storedScore?: number | null;
   }) => {
     setState((s) => ({
       ...s,
@@ -192,7 +204,6 @@ export function useOptimizePrompt() {
       sessionId: data.sessionId,
       provider: data.provider,
       model: data.model,
-      storedScore: data.storedScore ?? null,
       isLoading: false,
       error: null,
     }));

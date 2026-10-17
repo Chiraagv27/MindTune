@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { getSessionUser } from '@/lib/client/authSession';
 import { getSupabaseClient } from '@/lib/client/supabase';
 import { X, Trash2, LogOut, AlertTriangle } from 'lucide-react';
 
@@ -21,7 +22,7 @@ export function SettingsModal({ isOpen, onClose, onLogout }: SettingsModalProps)
     if (!supabase) return;
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { user } = await getSessionUser(supabase);
       if (!user) throw new Error('No user found');
 
       const res = await fetch('/api/auth/delete-account', {

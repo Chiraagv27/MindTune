@@ -11,8 +11,14 @@ export function useApiConfig() {
 
   useEffect(() => {
     fetch('/api/config')
-      .then((r) => r.json())
-      .then((data) => setConfig(data as ApiConfigResponse))
+      .then(async (r) => {
+        const ct = r.headers.get('content-type') ?? '';
+        if (!r.ok || !ct.includes('application/json')) {
+          throw new Error('config unavailable');
+        }
+        return r.json() as Promise<ApiConfigResponse>;
+      })
+      .then((data) => setConfig(data))
       .catch(() =>
         setConfig({
           providers: {

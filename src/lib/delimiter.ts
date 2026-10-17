@@ -51,3 +51,65 @@ export function splitOptimizedOutput(text: string): SplitOptimizedOutputResult {
   return { optimizedText: text.trim(), explanation: '', changes: '', delimiter: null };
 }
 
+export type SplitStreamCache = {
+  explIdx: number;
+  changesIdx: number;
+  legacyIdx: number;
+  delimiter: string | null;
+};
+
+export function createSplitStreamCache(): SplitStreamCache {
+  return { explIdx: -1, changesIdx: -1, legacyIdx: -1, delimiter: null };
+}
+
+/** Faster incremental split while streaming (avoids rescanning once delimiters are found). */
+export function splitOptimizedOutputStreaming(
+  text: string,
+  cache: SplitStreamCache,
+): SplitOptimizedOutputResult {
+  if (cache.explIdx === -1) {
+    cache.explIdx = text.indexOf(EXPLANATION_DELIMITER);
+    if (cache.explIdx !== -1) cache.delimiter = EXPLANATION_DELIMITER;
+  }
+  if (cache.explIdx === -1 && cache.legacyIdx === -1) {
+    cache.legacyIdx = text.indexOf(LEGACY_EXPLANATION_DELIMITER);
+    if (cache.legacyIdx !== -1) cache.delimiter = LEGACY_EXPLANATION_DELIMITER;
+  }
+  if (cache.explIdx !== -1 && cache.changesIdx === -1) {
+    cache.changesIdx = text.indexOf(CHANGES_DELIMITER);
+  }
+
+  const explIdx = cache.explIdx;
+  const changesIdx = cache.changesIdx;
+  const legacyIdx = cache.legacyIdx;
+
+  if (explIdx !== -1 && changesIdx !== -1 && changesIdx > explIdx) {
+    return {
+      optimizedText: text.slice(0, explIdx).trim(),
+      explanation: text.slice(explIdx + EXPLANATION_DELIMITER.length, changesIdx).trim(),
+      changes: text.slice(changesIdx + CHANGES_DELIMITER.length).trim(),
+      delimiter: EXPLANATION_DELIMITER,
+    };
+  }
+
+  if (explIdx !== -1) {
+    return {
+      optimizedText: text.slice(0, explIdx).trim(),
+      explanation: text.slice(explIdx + EXPLANATION_DELIMITER.length).trim(),
+      changes: '',
+      delimiter: EXPLANATION_DELIMITER,
+    };
+  }
+
+  if (legacyIdx !== -1) {
+    return {
+      optimizedText: text.slice(0, legacyIdx).trim(),
+      explanation: text.slice(legacyIdx + LEGACY_EXPLANATION_DELIMITER.length).trim(),
+      changes: '',
+      delimiter: LEGACY_EXPLANATION_DELIMITER,
+    };
+  }
+
+  return { optimizedText: text.trim(), explanation: '', changes: '', delimiter: null };
+}
+

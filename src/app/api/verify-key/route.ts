@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     await generateText({
       model: getLanguageModel({ provider, apiKey: apiKey.trim(), model: '' }, models[0]),
       prompt: 'Say "ok".',
-      maxTokens: 5,
+      maxOutputTokens: 5,
     });
 
     return NextResponse.json({ valid: true });
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
     } else if (msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('rate limit')) {
       reason = 'Key is valid but rate limited or quota exceeded.';
     } else if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
-      reason = 'Model not found — but your key may still be valid.';
+      reason = 'Model not found, but your key may still be valid.';
     }
 
     return NextResponse.json({ valid: false, reason }, { status: 200 });

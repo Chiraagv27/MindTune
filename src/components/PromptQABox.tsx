@@ -2,21 +2,22 @@
 
 import { Send } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-
+import { LazyMarkdown } from '@/components/LazyMarkdown';
 import type { ProviderId } from '@/lib/types';
+
+type QAMessage = { role: 'user' | 'assistant'; content: string };
 
 interface PromptQABoxProps {
   optimizedPrompt: string;
   explanation: string;
   provider: ProviderId;
   apiKey: string;
-  initialMessages?: Message[];
+  initialMessages?: QAMessage[];
   sessionId: string;
 }
 
 export function PromptQABox({ optimizedPrompt, explanation, provider, apiKey, initialMessages = [], sessionId }: PromptQABoxProps) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<QAMessage[]>(initialMessages);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -73,10 +74,10 @@ export function PromptQABox({ optimizedPrompt, explanation, provider, apiKey, in
   };
 
   return (
-    <div className="rounded-3xl border border-zinc-200 bg-white/60 p-5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/40">
-      <h3 className="mb-4 text-sm font-semibold tracking-wide text-zinc-700 dark:text-zinc-300">
-        Ask about this prompt
-      </h3>
+    <div className="optimizer-output-card optimizer-qa-card">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="optimizer-output-card__title">Ask about this prompt</h3>
+      </div>
 
       <div className="mb-4 space-y-4">
         {messages.map((msg, i) => (
@@ -85,14 +86,14 @@ export function PromptQABox({ optimizedPrompt, explanation, provider, apiKey, in
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
+              className={`optimizer-qa-message max-w-[85%] rounded-2xl px-4 py-2.5 ${
                 msg.role === 'user'
-                  ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                  : 'bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100 prose dark:prose-invert prose-sm max-w-none leading-relaxed prose-p:my-3 prose-ul:my-3 prose-li:my-1'
+                  ? 'bg-sky-600/90 text-white ring-1 ring-sky-500/30'
+                  : 'bg-zinc-900/90 text-zinc-100 ring-1 ring-zinc-700/80 prose dark:prose-invert max-w-none prose-p:my-2.5 prose-ul:my-2.5 prose-li:my-0.5 prose-headings:my-2'
               }`}
             >
               {msg.role === 'assistant' ? (
-                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                <LazyMarkdown content={msg.content} />
               ) : (
                 msg.content
               )}
@@ -101,7 +102,7 @@ export function PromptQABox({ optimizedPrompt, explanation, provider, apiKey, in
         ))}
         {isLoading && (
           <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2 text-sm text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+            <div className="optimizer-qa-message max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2.5 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
               Thinking...
             </div>
           </div>
@@ -119,15 +120,15 @@ export function PromptQABox({ optimizedPrompt, explanation, provider, apiKey, in
               handleSubmit(e);
             }
           }}
-          placeholder="Ask Anything....."
+          placeholder="Ask MindTune...."
           rows={1}
-          className="min-h-[44px] w-full resize-none overflow-hidden rounded-2xl border border-zinc-200 bg-white/70 px-4 py-3 pr-12 text-sm text-zinc-900 shadow-sm outline-none backdrop-blur transition focus:border-zinc-400 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-50"
+          className="optimizer-qa-input min-h-[44px] w-full resize-none overflow-hidden px-4 py-3 pr-12 shadow-sm transition disabled:opacity-50"
           disabled={isLoading}
         />
         <button
           type="submit"
           disabled={!input.trim() || isLoading}
-          className="absolute right-2 bottom-1.5 rounded-xl p-2 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+          className="optimizer-qa-send absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center justify-center rounded-lg p-2 transition disabled:opacity-50"
         >
           <Send className="h-4 w-4" />
         </button>

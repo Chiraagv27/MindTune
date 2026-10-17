@@ -102,7 +102,7 @@ export function ApiKeyField({
           ) : (
             <KeyRound className="h-3.5 w-3.5" />
           )}
-          {status === 'loading' ? 'Verifying...' : 'Test Key'}
+          {status === 'loading' ? 'Verifying…' : 'Verify'}
         </button>
 
         {status === 'valid' && (

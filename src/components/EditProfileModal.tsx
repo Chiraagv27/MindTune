@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, Mail, Pencil, User, X } from 'lucide-react';
+import { getSessionUser } from '@/lib/client/authSession';
 import { getSupabaseClient } from '@/lib/client/supabase';
 
 interface EditProfileModalProps {
@@ -15,30 +16,20 @@ interface EditProfileModalProps {
 const inputCls =
   'block w-full rounded-xl border border-zinc-700/60 bg-zinc-800/60 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 transition focus:border-violet-500/60 focus:outline-none focus:ring-2 focus:ring-violet-500/20';
 
-export function EditProfileModal({
-  isOpen,
+type EditProfileModalPanelProps = Omit<EditProfileModalProps, 'isOpen'>;
+
+function EditProfileModalPanel({
   onClose,
   currentEmail = '',
   currentUsername = '',
   onUsernameUpdate,
-}: EditProfileModalProps) {
+}: EditProfileModalPanelProps) {
   const [newUsername, setNewUsername] = useState(currentUsername ?? '');
   const [newEmail, setNewEmail] = useState(currentEmail);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [emailVerificationPending, setEmailVerificationPending] = useState(false);
-
-  // Sync fields whenever the modal opens
-  useEffect(() => {
-    if (isOpen) {
-      setNewUsername(currentUsername ?? '');
-      setNewEmail(currentEmail);
-      setError(null);
-      setSuccess(null);
-      setEmailVerificationPending(false);
-    }
-  }, [isOpen, currentUsername, currentEmail]);
 
   const hasChanges =
     newUsername.trim() !== (currentUsername ?? '').trim() ||
@@ -52,7 +43,7 @@ export function EditProfileModal({
     const supabase = getSupabaseClient();
     if (!supabase) { setLoading(false); return; }
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { user } = await getSessionUser(supabase);
     if (!user) { setError('Not signed in.'); setLoading(false); return; }
 
     const trimmedName  = newUsername.trim();
@@ -134,15 +125,12 @@ export function EditProfileModal({
     setLoading(false);
     setSuccess(
       emailChanged
-        ? `${nameChanged ? 'Name updated! ' : ''}Verification link sent to ${newEmail.trim()}. Click it to confirm — your password stays the same.`
+        ? `${nameChanged ? 'Name updated! ' : ''}Verification link sent to ${newEmail.trim()}. Click it to confirm. Your password stays the same.`
         : 'Name updated successfully!',
     );
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-sm overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60">
 
         {/* Gradient top bar */}
@@ -196,12 +184,12 @@ export function EditProfileModal({
             />
             {emailVerificationPending && (
               <p className="mt-1.5 text-xs text-amber-400">
-                Waiting for email verification — check your inbox.
+                Waiting for email verification. Check your inbox.
               </p>
             )}
           </div>
 
-          {/* Feedback */}
+          {/* Status messages */}
           {error && (
             <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
               {error}
@@ -248,6 +236,27 @@ export function EditProfileModal({
           </div>
         </div>
       </div>
+  );
+}
+
+export function EditProfileModal({
+  isOpen,
+  onClose,
+  currentEmail = '',
+  currentUsername = '',
+  onUsernameUpdate,
+}: EditProfileModalProps) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <EditProfileModalPanel
+        key={`${currentEmail}-${currentUsername ?? ''}`}
+        onClose={onClose}
+        currentEmail={currentEmail}
+        currentUsername={currentUsername}
+        onUsernameUpdate={onUsernameUpdate}
+      />
     </div>
   );
 }

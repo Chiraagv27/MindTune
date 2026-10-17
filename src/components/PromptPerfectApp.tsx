@@ -1,40 +1,106 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
-import { type Session } from '@supabase/supabase-js';
-
-import { PromptPerfectActions } from '@/components/PromptPerfectActions';
-import { PromptChatBox } from '@/components/PromptChatBox';
-import { PromptPerfectForm } from '@/components/PromptPerfectForm';
+import {
+  useDeferredValue,
+  useMemo,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from 'react';
+import { OptimizerComposer, type PromptLoadRequest } from '@/components/OptimizerComposer';
 import { PromptPerfectHeader } from '@/components/PromptPerfectHeader';
 import { PromptPerfectOutputs } from '@/components/PromptPerfectOutputs';
-import { PromptScoreRow } from '@/components/PromptScoreRow';
-import { HistoryPanel, type HistoryItem } from '@/components/HistoryPanel';
+import type { HistoryItem } from '@/components/HistoryPanel';
+import dynamic from 'next/dynamic';
 import { Auth } from '@/components/Auth';
 import { useApiConfig } from '@/hooks/useApiConfig';
 import { useLocalStorageState } from '@/hooks/useLocalStorageState';
 import { useOptimizePrompt } from '@/hooks/useOptimizePrompt';
+import { clearLocalAuthSession, getClientSession, isAuthNetworkError } from '@/lib/client/authSession';
 import { getSupabaseClient } from '@/lib/client/supabase';
 import { useAuthUserEmail } from '@/hooks/useAuthUserEmail';
-import type { Mode, OptimizeVersion, ProviderId } from '@/lib/types';
+import { normalizeAppMode } from '@/lib/modeStyles';
+import type { AppAuthSession, Mode, OptimizeVersion, ProviderId } from '@/lib/types';
 
-import { SettingsModal } from '@/components/SettingsModal';
-import { EditProfileModal } from '@/components/EditProfileModal';
-import { ShareButton } from '@/components/ShareButton';
+import { AppBar } from '@/components/AppBar';
+import { MindTuneShell } from '@/components/MindTuneShell';
+import { getUserProfile } from '@/lib/client/userProfile';
+import { readCachedAvatar, writeCachedAvatar } from '@/lib/robotAvatar';
+import { UpdatePassword } from '@/components/UpdatePassword';
+import {
+  RECENT_HISTORY_SELECT,
+  RECENT_NEW_OPTIMIZER,
+  consumeHistoryPick,
+  consumeNewOptimizerFlag,
+  registerNewOptimizerHandler,
+} from '@/lib/recentDrawer';
 
-function PromptPerfectMain({ session, onLogout }: { session: Session; onLogout: () => void }) {
+const LandingPage = dynamic(
+  () => import('@/components/LandingPage').then((mod) => mod.LandingPage),
+  { ssr: false },
+);
+
+type ModeWorkspaceSnapshot = {
+  promptLoad: PromptLoadRequest | null;
+  tunedOriginal: string;
+  initialQAMessages: { role: 'user' | 'assistant'; content: string }[];
+  hideEmptyResultShell: boolean;
+  provider: ProviderId;
+  optimizedText: string;
+  explanation: string;
+  changes: string;
+  sessionId: string;
+  usedProvider: ProviderId | string;
+  usedModel: string;
+};
+
+function workspaceHasContent(snapshot: ModeWorkspaceSnapshot): boolean {
+  return Boolean(
+    snapshot.tunedOriginal.trim() ||
+      snapshot.optimizedText.trim() ||
+      (snapshot.promptLoad?.text ?? '').trim(),
+  );
+}
+
+function promptTextFromSnapshot(snapshot: ModeWorkspaceSnapshot): string {
+  return snapshot.tunedOriginal.trim() || (snapshot.promptLoad?.text ?? '').trim();
+}
+
+function PromptPerfectMain({ session }: { session: AppAuthSession; onLogout: () => void }) {
   const userId = session.user.id;
   const authEmail = useAuthUserEmail(session);
-  const [prompt, setPrompt] = useState('');
+  const [promptLoad, setPromptLoad] = useState<PromptLoadRequest | null>(null);
+  const [tunedOriginal, setTunedOriginal] = useState('');
+  const [hideEmptyResultShell, setHideEmptyResultShell] = useState(false);
   const [mode, setMode] = useState<Mode>('developer');
   // Always use v2 (Stream)
   const [version, setVersion] = useState<OptimizeVersion>('v2');
   const [provider, setProvider] = useState<ProviderId>('google');
   const [username, setUsername] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const modeWorkspacesRef = useRef<Partial<Record<Mode, ModeWorkspaceSnapshot>>>({});
 
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  useEffect(() => {
+    const raw = window.sessionStorage.getItem('pp_reoptimize');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { text?: unknown; mode?: unknown };
+        if (typeof parsed.text === 'string') {
+          setPromptLoad({ text: parsed.text, key: Date.now() });
+        }
+        if (typeof parsed.mode === 'string') {
+          setMode(normalizeAppMode(parsed.mode));
+        }
+      } catch {
+        // ignore
+      } finally {
+        window.sessionStorage.removeItem('pp_reoptimize');
+      }
+    }
+
+  }, []);
 
   useEffect(() => {
     // First try session metadata (available immediately after signup)
@@ -53,8 +119,34 @@ function PromptPerfectMain({ session, onLogout }: { session: Session; onLogout: 
         if (data?.username) setUsername(data.username);
       });
   }, [userId, session.user.user_metadata]);
+
+  useLayoutEffect(() => {
+    setAvatarUrl(readCachedAvatar(userId));
+  }, [userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getUserProfile(userId).then((profile) => {
+      if (cancelled || !profile) return;
+      setAvatarUrl(profile.avatar_url);
+      writeCachedAvatar(userId, profile.avatar_url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    const onAvatarUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ userId?: string }>).detail;
+      if (detail?.userId && detail.userId !== userId) return;
+      setAvatarUrl(readCachedAvatar(userId));
+    };
+    window.addEventListener('pp-avatar-updated', onAvatarUpdated);
+    return () => window.removeEventListener('pp-avatar-updated', onAvatarUpdated);
+  }, [userId]);
+
   const [initialQAMessages, setInitialQAMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
-  const [initialFeedback, setInitialFeedback] = useState<{ rating?: 'up' | 'down' | null; text?: string }>({});
 
   const { hasServerKey } = useApiConfig();
   
@@ -78,7 +170,6 @@ function PromptPerfectMain({ session, onLogout }: { session: Session; onLogout: 
     explanation,
     changes,
     sessionId,
-    storedScore,
     provider: usedProvider,
     model: usedModel,
     isLoading,
@@ -88,242 +179,349 @@ function PromptPerfectMain({ session, onLogout }: { session: Session; onLogout: 
     loadSession,
   } = useOptimizePrompt();
 
-  const helpText = useMemo(() => {
-    const serverHasKey = hasServerKey(provider);
-    if (serverHasKey) {
-      return 'Server key detected. You can leave this empty, or paste a BYOK key to override.';
-    }
-    const providerNames: Record<string, string> = {
-      google: 'Gemini',
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      groq: 'Groq',
-    };
-    const displayName = providerNames[provider] ?? provider;
-    return `No server key detected for ${displayName}. Paste your key.`;
-  }, [hasServerKey, provider]);
-
   const shouldShowKeyHint =
     !hasServerKey(provider) && currentKey.hydrated && currentKey.value.trim().length === 0;
 
+  const runTune = useCallback(
+    (prompt: string) => {
+      setHideEmptyResultShell(false);
+      setTunedOriginal(prompt);
+      setInitialQAMessages([]);
+      optimize({
+        prompt,
+        mode,
+        provider,
+        version,
+        apiKey: currentKey.value,
+        userId: userId,
+      });
+    },
+    [optimize, mode, provider, version, currentKey.value, userId],
+  );
+
+  const deferredOptimized = useDeferredValue(optimizedText);
+  const deferredExplanation = useDeferredValue(explanation);
+  const deferredChanges = useDeferredValue(changes);
+
+  const displayOptimized =
+    isLoading || optimizedText.trim() ? (isLoading ? optimizedText : deferredOptimized) : '';
+  const displayExplanation =
+    isLoading || explanation.trim() ? (isLoading ? explanation : deferredExplanation) : '';
+  const displayChanges = isLoading || changes.trim() ? (isLoading ? changes : deferredChanges) : '';
+
+  const resetWorkspaceForNewRun = useCallback(
+    (options?: { hideEmptyShell?: boolean }) => {
+      setPromptLoad({ text: '', key: Date.now() });
+      setTunedOriginal('');
+      setInitialQAMessages([]);
+      reset();
+      if (options?.hideEmptyShell !== undefined) {
+        setHideEmptyResultShell(options.hideEmptyShell);
+      }
+    },
+    [reset],
+  );
+
+  const clearModeWorkspaces = useCallback(() => {
+    modeWorkspacesRef.current = {};
+  }, []);
+
+  const captureModeWorkspace = useCallback((): ModeWorkspaceSnapshot => {
+    return {
+      promptLoad,
+      tunedOriginal,
+      initialQAMessages,
+      hideEmptyResultShell,
+      provider,
+      optimizedText,
+      explanation,
+      changes,
+      sessionId,
+      usedProvider: usedProvider ?? provider,
+      usedModel: usedModel ?? '',
+    };
+  }, [
+    promptLoad,
+    tunedOriginal,
+    initialQAMessages,
+    hideEmptyResultShell,
+    provider,
+    optimizedText,
+    explanation,
+    changes,
+    sessionId,
+    usedProvider,
+    usedModel,
+  ]);
+
+  const restoreModeWorkspace = useCallback(
+    (snapshot: ModeWorkspaceSnapshot) => {
+      setHideEmptyResultShell(snapshot.hideEmptyResultShell);
+      setProvider(snapshot.provider);
+      setPromptLoad(snapshot.promptLoad ?? { text: '', key: Date.now() });
+      setTunedOriginal(snapshot.tunedOriginal);
+      setInitialQAMessages(snapshot.initialQAMessages);
+      if (snapshot.optimizedText.trim() || snapshot.sessionId.trim()) {
+        loadSession({
+          optimizedText: snapshot.optimizedText,
+          explanation: snapshot.explanation,
+          changes: snapshot.changes,
+          sessionId: snapshot.sessionId,
+          provider: (String(snapshot.usedProvider || snapshot.provider).trim() || 'google') as ProviderId,
+          model: snapshot.usedModel,
+        });
+      } else {
+        reset();
+      }
+    },
+    [loadSession, reset],
+  );
+
+  const handleModeChange = useCallback(
+    (next: Mode) => {
+      if (next === mode) return;
+
+      const currentSnapshot = captureModeWorkspace();
+      if (workspaceHasContent(currentSnapshot)) {
+        modeWorkspacesRef.current[mode] = currentSnapshot;
+      }
+
+      setMode(next);
+
+      const cached = modeWorkspacesRef.current[next];
+      if (cached && workspaceHasContent(cached)) {
+        restoreModeWorkspace(cached);
+      } else {
+        const carriedPrompt = promptTextFromSnapshot(currentSnapshot);
+        if (carriedPrompt) {
+          setHideEmptyResultShell(false);
+          setPromptLoad({ text: carriedPrompt, key: Date.now() });
+          setTunedOriginal('');
+          setInitialQAMessages([]);
+          reset();
+        } else {
+          resetWorkspaceForNewRun({ hideEmptyShell: false });
+        }
+      }
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    },
+    [mode, captureModeWorkspace, restoreModeWorkspace, resetWorkspaceForNewRun],
+  );
+
+  const applyHistoryItem = useCallback(
+    async (item: HistoryItem) => {
+      clearModeWorkspaces();
+      setHideEmptyResultShell(false);
+      setPromptLoad({ text: item.original_prompt, key: Date.now() });
+      setTunedOriginal(item.original_prompt);
+      setMode(normalizeAppMode(item.mode));
+      setProvider((item.provider?.trim() || 'google') as ProviderId);
+
+      loadSession({
+        optimizedText: item.optimized_prompt || '',
+        explanation: item.explanation || '',
+        changes: item.changes || '',
+        sessionId: item.session_id,
+        provider: item.provider as ProviderId,
+        model: item.model || '',
+      });
+
+      try {
+        const res = await fetch(`/api/qa-history?session_id=${item.session_id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setInitialQAMessages(data.messages || []);
+        } else {
+          setInitialQAMessages([]);
+        }
+      } catch (e) {
+        console.error('Failed to fetch QA history', e);
+        setInitialQAMessages([]);
+      }
+    },
+    [clearModeWorkspaces, loadSession],
+  );
+
+  const startFreshOptimizer = useCallback(() => {
+    clearModeWorkspaces();
+    resetWorkspaceForNewRun({ hideEmptyShell: false });
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [clearModeWorkspaces, resetWorkspaceForNewRun]);
+
+  useEffect(() => {
+    const picked = consumeHistoryPick();
+    if (picked) {
+      void applyHistoryItem(picked);
+      return;
+    }
+    if (consumeNewOptimizerFlag()) {
+      startFreshOptimizer();
+      return;
+    }
+
+    const savedRaw = window.sessionStorage.getItem('pp_open_saved');
+    if (!savedRaw) return;
+    try {
+      const saved = JSON.parse(savedRaw) as {
+        original_prompt?: string;
+        optimized_prompt?: string;
+        explanation?: string;
+        mode?: string;
+        provider?: string;
+      };
+      clearModeWorkspaces();
+      setHideEmptyResultShell(false);
+      if (typeof saved.original_prompt === 'string') {
+        setPromptLoad({ text: saved.original_prompt, key: Date.now() });
+        setTunedOriginal(saved.original_prompt);
+      }
+      if (typeof saved.mode === 'string') {
+        setMode(normalizeAppMode(saved.mode));
+      }
+      if (typeof saved.provider === 'string' && saved.provider.trim()) {
+        setProvider(saved.provider.trim() as ProviderId);
+      }
+      if (typeof saved.optimized_prompt === 'string' && saved.optimized_prompt.trim()) {
+        loadSession({
+          optimizedText: saved.optimized_prompt,
+          explanation: typeof saved.explanation === 'string' ? saved.explanation : '',
+          changes: '',
+          sessionId: '',
+          provider: (saved.provider?.trim() || 'google') as ProviderId,
+          model: '',
+        });
+      }
+    } catch {
+      // ignore
+    } finally {
+      window.sessionStorage.removeItem('pp_open_saved');
+    }
+  }, [applyHistoryItem, loadSession, startFreshOptimizer]);
+
+  useEffect(() => {
+    registerNewOptimizerHandler(startFreshOptimizer);
+    return () => registerNewOptimizerHandler(null);
+  }, [startFreshOptimizer]);
+
+  useEffect(() => {
+    const onSelect = (event: Event) => {
+      const item = (event as CustomEvent<HistoryItem>).detail;
+      if (item) void applyHistoryItem(item);
+    };
+    const onNew = () => startFreshOptimizer();
+    window.addEventListener(RECENT_HISTORY_SELECT, onSelect);
+    window.addEventListener(RECENT_NEW_OPTIMIZER, onNew);
+    return () => {
+      window.removeEventListener(RECENT_HISTORY_SELECT, onSelect);
+      window.removeEventListener(RECENT_NEW_OPTIMIZER, onNew);
+    };
+  }, [applyHistoryItem, startFreshOptimizer]);
+
+  const navProfile = useMemo(
+    () => ({
+      userId,
+      userEmail: authEmail,
+      username,
+      avatarUrl,
+    }),
+    [userId, authEmail, username, avatarUrl],
+  );
+
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden bg-zinc-950 px-5 py-10 md:px-10 md:py-12">
-      {/* Ambient background orbs matching landing page */}
-      <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute left-1/4 top-0 h-[500px] w-[500px] rounded-full bg-violet-600/8 blur-3xl animate-glow-pulse" />
-        <div className="absolute right-1/4 top-1/3 h-96 w-96 rounded-full bg-pink-600/6 blur-3xl animate-glow-pulse delay-300" />
-        <div className="absolute bottom-1/4 left-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-indigo-600/6 blur-3xl animate-glow-pulse delay-500" />
-      </div>
-      <div className="relative z-10 w-full">
-        <div className="mb-10">
-          <PromptPerfectHeader 
-            onHistoryClick={() => setIsHistoryOpen(true)} 
-            onSettingsClick={() => setIsSettingsOpen(true)}
-            onEditProfileClick={() => setIsEditProfileOpen(true)}
-            onLogout={onLogout}
-            onLogoClick={() => window.location.href = '/welcome'}
-            userEmail={authEmail}
-            username={username}
-          />
-        </div>
+    <MindTuneShell>
+      <AppBar active="optimizer" profile={navProfile} />
+      <div className="optimizer-page landing-content-wide w-full py-8 md:py-10">
+          <div className="optimizer-page-glow" aria-hidden />
+          <div className="relative">
+          <PromptPerfectHeader />
 
-        <SettingsModal
-          isOpen={isSettingsOpen}
-          onClose={() => setIsSettingsOpen(false)}
-          onLogout={onLogout}
-        />
-
-        <EditProfileModal
-          isOpen={isEditProfileOpen}
-          onClose={() => setIsEditProfileOpen(false)}
-          currentEmail={authEmail}
-          currentUsername={username}
-          onUsernameUpdate={(newName) => setUsername(newName)}
-        />
-
-        <HistoryPanel
-          userId={userId}
-          isOpen={isHistoryOpen}
-          onClose={() => setIsHistoryOpen(false)}
-          onSelect={async (item: HistoryItem) => {
-            setPrompt(item.original_prompt);
-            setMode(item.mode as Mode);
-            setProvider(item.provider as ProviderId);
-            
-            loadSession({
-              optimizedText: item.optimized_prompt || '',
-              explanation: item.explanation || '',
-              changes: item.changes || '',
-              sessionId: item.session_id,
-              provider: item.provider as ProviderId,
-              model: item.model || '',
-              storedScore: item.prompt_score ?? null,
-            });
-
-            setInitialFeedback({
-              rating: item.feedback as 'up' | 'down' | null,
-              text: item.feedback_text,
-            });
-
-            try {
-              const res = await fetch(`/api/qa-history?session_id=${item.session_id}`);
-              if (res.ok) {
-                const data = await res.json();
-                setInitialQAMessages(data.messages || []);
-              } else {
-                setInitialQAMessages([]);
-              }
-            } catch (e) {
-              console.error('Failed to fetch QA history', e);
-              setInitialQAMessages([]);
-            }
+        <OptimizerComposer
+          isLoading={isLoading}
+          mode={mode}
+          onModeChange={handleModeChange}
+          version={version}
+          onVersionChange={(v) => {
+            setVersion(v);
+            reset();
+          }}
+          provider={provider}
+          onProviderChange={setProvider}
+          usedProvider={usedProvider}
+          usedModel={usedModel}
+          promptLoad={promptLoad}
+          error={error}
+          shouldShowKeyHint={shouldShowKeyHint}
+          onTune={runTune}
+          onReset={() => {
+            setHideEmptyResultShell(false);
+            setInitialQAMessages([]);
+            setTunedOriginal('');
+            reset();
           }}
         />
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <PromptChatBox
-            value={prompt}
-            onChange={setPrompt}
-            disabled={isLoading}
-            onAutoTune={() => {
-              if (!prompt.trim()) return;
-              setInitialQAMessages([]);
-              setInitialFeedback({});
-              optimize({
-                prompt,
-                mode,
-                provider,
-                version,
-                apiKey: currentKey.value,
-                userId: userId,
-              });
-            }}
-          />
-
-          <div className="space-y-6">
-            <div className="card-animated-border rounded-[28px] border border-white/6 bg-zinc-900/50 p-5 shadow-lg shadow-black/20 backdrop-blur-xl dark:border-zinc-800/60 md:p-7">
-              <PromptPerfectForm
-                mode={mode}
-                onModeChange={setMode}
-                version={version}
-                onVersionChange={(v) => {
-                  setVersion(v);
-                  reset();
-                }}
-                provider={provider}
-                onProviderChange={setProvider}
-                apiKey={currentKey.value}
-                onApiKeyChange={currentKey.setValue}
-                apiKeyHelpText={helpText}
-                apiKeyDisabled={isLoading || !currentKey.hydrated}
-                disabled={isLoading}
-              />
-
-              <div className="mt-6">
-                <PromptPerfectActions
-                  canSubmit={Boolean(prompt.trim())}
-                  isLoading={isLoading}
-                  usedProvider={usedProvider}
-                  usedModel={usedModel}
-                  onSubmit={() => {
-                    setInitialQAMessages([]);
-                    setInitialFeedback({});
-                    optimize({
-                      prompt,
-                      mode,
-                      provider,
-                      version,
-                      apiKey: currentKey.value,
-                      userId: userId,
-                    });
-                  }}
-                  onReset={() => {
-                    setPrompt('');
-                    setInitialQAMessages([]);
-                    setInitialFeedback({});
-                    reset();
-                  }}
-                />
-              </div>
-            </div>
-
-            <PromptScoreRow
-              originalText={prompt}
-              optimizedText={optimizedText}
-              storedScore={storedScore}
-            />
-
-            {optimizedText.trim() && <ShareButton sessionId={sessionId} />}
-
-            {error ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300">
-                {error}
-              </div>
-            ) : null}
-
-            {shouldShowKeyHint ? (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800 shadow-sm backdrop-blur dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
-                Add <code className="font-mono">{provider.toUpperCase()}_API_KEY</code> to <code className="font-mono">.env</code> and
-                restart <code className="font-mono">npm run dev</code>, or open Advanced and paste a BYOK key.
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="mt-8">
+        <div className="mt-7">
           <PromptPerfectOutputs
-            optimizedText={optimizedText}
-            explanation={explanation}
-            changes={changes}
+            optimizedText={displayOptimized}
+            explanation={displayExplanation}
+            changes={displayChanges}
             sessionId={sessionId}
             mode={mode}
             isLoading={isLoading}
             provider={provider}
             apiKey={currentKey.value}
+            originalText={tunedOriginal}
+            userId={userId}
+            usedProvider={usedProvider}
             initialQAMessages={initialQAMessages}
-            initialFeedback={initialFeedback}
+            hideEmptyShell={hideEmptyResultShell}
           />
         </div>
+          </div>
       </div>
-    </div>
+    </MindTuneShell>
   );
 }
 
-import { UpdatePassword } from '@/components/UpdatePassword';
-import { LandingPage } from '@/components/LandingPage';
-
 export function PromptPerfectApp() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<AppAuthSession | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
-  const [forceAuth, setForceAuth] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('auth') === '1') {
-      setForceAuth(true);
-    }
-  }, []);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>(() => {
+    if (typeof window === 'undefined') return 'login';
+    return new URLSearchParams(window.location.search).get('auth') === 'signup' ? 'signup' : 'login';
+  });
+  const [forceAuth, setForceAuth] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const auth = new URLSearchParams(window.location.search).get('auth');
+    return auth === '1' || auth === 'login' || auth === 'signup';
+  });
 
   useEffect(() => {
     const supabase = getSupabaseClient();
     if (!supabase) {
-      setLoadingSession(false);
+      void Promise.resolve().then(() => setLoadingSession(false));
       return;
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    void (async () => {
+      const { session, error } = await getClientSession(supabase);
+      if (error && isAuthNetworkError(error)) {
+        await clearLocalAuthSession(supabase);
+        setSession(null);
+      } else {
+        setSession(session);
+      }
       setLoadingSession(false);
-    });
+    })();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
       setLoadingSession(false);
-      
+
       if (event === 'PASSWORD_RECOVERY') {
         setIsPasswordRecovery(true);
       } else if (!session) {
@@ -344,9 +542,11 @@ export function PromptPerfectApp() {
 
   if (loadingSession) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-700 dark:border-t-zinc-400" />
-      </div>
+      <MindTuneShell>
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-sky-400" />
+        </div>
+      </MindTuneShell>
     );
   }
 
@@ -356,12 +556,36 @@ export function PromptPerfectApp() {
 
   // Show landing page for logged-out users who haven't clicked Get Started yet
   if (!session && showLanding && !forceAuth) {
-    return <LandingPage onGetStarted={() => { setShowLanding(false); setForceAuth(true); }} />;
+    return (
+      <LandingPage
+        onLogin={() => {
+          setAuthMode('login');
+          setShowLanding(false);
+          setForceAuth(true);
+        }}
+        onSignUp={() => {
+          setAuthMode('signup');
+          setShowLanding(false);
+          setForceAuth(true);
+        }}
+      />
+    );
   }
 
-  // Always show login/signup after clicking Get Started, even if already logged in
   if (!session || forceAuth) {
-    return <Auth onLogin={() => setForceAuth(false)} />;
+    return (
+      <Auth
+        initialMode={authMode}
+        onLogin={() => setForceAuth(false)}
+        onLogoClick={() => {
+          setShowLanding(true);
+          setForceAuth(false);
+          const url = new URL(window.location.href);
+          url.searchParams.delete('auth');
+          window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+        }}
+      />
+    );
   }
 
   return <PromptPerfectMain session={session} onLogout={handleLogout} />;

@@ -1,4 +1,20 @@
-export type Mode = 'developer' | 'beginner' | 'specific' | 'step-by-step';
+/**
+ * Subset of Supabase auth session used in the UI. Declared here so we do not
+ * depend on `Session` re-exports from @supabase/supabase-js (varies by version).
+ */
+export interface AppAuthSession {
+  user: {
+    id: string;
+    email?: string | null;
+    user_metadata?: Record<string, unknown>;
+    app_metadata?: {
+      provider?: string;
+      providers?: string[];
+    };
+  };
+}
+
+export type Mode = 'developer' | 'beginner' | 'step-by-step';
 
 export type ProviderId = 'google' | 'openai' | 'anthropic' | 'groq';
 

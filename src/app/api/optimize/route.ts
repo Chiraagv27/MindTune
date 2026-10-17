@@ -1,15 +1,9 @@
-import { generateText, streamText } from 'ai';
+import { streamText } from 'ai';
 import type { NextRequest } from 'next/server';
 
 import { getModeSystemPrompt } from '@/lib/prompts';
-import { scorePrompt } from '@/lib/promptScore';
 import { splitOptimizedOutput } from '@/lib/delimiter';
-import {
-  getLanguageModel,
-  isRetryableProviderError,
-  resolveModelList,
-  hasServerKey,
-} from '@/lib/providers';
+import { getLanguageModel, resolveModelList, hasServerKey } from '@/lib/providers';
 import { getSupabaseAdminClient } from '@/lib/client/supabase';
 import type { Mode, OptimizeRequest, OptimizeVersion, ProviderId } from '@/lib/types';
 
@@ -17,7 +11,6 @@ function isMode(value: unknown): value is Mode {
   return (
     value === 'developer' ||
     value === 'beginner' ||
-    value === 'specific' ||
     value === 'step-by-step'
   );
 }
@@ -31,38 +24,12 @@ function isProvider(value: unknown): value is ProviderId {
   );
 }
 
-async function pickFirstWorkingModel(args: {
-  provider: ProviderId;
-  apiKey?: string;
-  system: string;
-  prompt: string;
-  modelIds: string[];
-}): Promise<string> {
-  let lastError: unknown = null;
-  for (const modelId of args.modelIds) {
-    try {
-      const model = getLanguageModel(
-        { provider: args.provider, model: modelId, apiKey: args.apiKey },
-        modelId,
-      );
-
-      // Very small preflight call so we can fall back if a model is missing/quota'd.
-      await generateText({
-        model,
-        system: args.system,
-        prompt: args.prompt,
-        maxOutputTokens: 20,
-      });
-
-      return modelId;
-    } catch (err) {
-      lastError = err;
-      if (isRetryableProviderError(err)) continue;
-      break;
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('No model succeeded');
+function resolveModelId(modelIds: string[], modelOverride?: string): string {
+  const override = modelOverride?.trim();
+  if (override && modelIds.includes(override)) return override;
+  const id = modelIds[0];
+  if (!id) throw new Error('No model configured for this provider');
+  return id;
 }
 
 export async function POST(req: NextRequest) {
@@ -90,15 +57,9 @@ export async function POST(req: NextRequest) {
     // Check if we have a key (either BYOK or server-side)
     const hasKey = apiKey || hasServerKey(provider);
     if (!hasKey) {
-      const envVarMap: Record<ProviderId, string> = {
-        google: 'GOOGLE_API_KEY',
-        openai: 'OPENAI_API_KEY',
-        anthropic: 'ANTHROPIC_API_KEY',
-        groq: 'GROQ_API_KEY',
-      };
       return Response.json(
         {
-          error: `Missing API key for ${provider}. Add ${envVarMap[provider]} to .env or paste a BYOK key in the UI.`,
+          error: 'Open Advanced, paste your API key, and verify it to continue.',
         },
         { status: 400 },
       );
@@ -106,7 +67,7 @@ export async function POST(req: NextRequest) {
 
     const system = getModeSystemPrompt(mode);
     const modelIds = resolveModelList({ provider, model: modelOverride ?? '', apiKey });
-    const modelId = await pickFirstWorkingModel({ provider, apiKey, system, prompt, modelIds });
+    const modelId = resolveModelId(modelIds, modelOverride);
     const model = getLanguageModel({ provider, model: modelId, apiKey }, modelId);
 
     const sessionId = typeof body.session_id === 'string' ? body.session_id.trim() : '';
@@ -138,20 +99,19 @@ export async function POST(req: NextRequest) {
       model,
       system,
       prompt,
+      maxOutputTokens: 8192,
       onFinish: async ({ text }) => {
         if (!sessionId) return;
         const supabase = getSupabaseAdminClient();
         if (!supabase) return;
 
         const { optimizedText, explanation, changes } = splitOptimizedOutput(text);
-        const promptScore = scorePrompt(optimizedText);
-
         const { error } = await supabase
           .from('optimization_logs')
           .update({
             optimized_length: optimizedText.length,
             explanation_length: explanation.length + changes.length,
-            prompt_score: promptScore,
+            prompt_score: null,
             optimized_prompt: optimizedText,
             explanation: explanation,
             changes: changes,

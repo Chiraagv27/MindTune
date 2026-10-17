@@ -3,6 +3,8 @@
 import { Check, Copy, Loader2, Share2 } from 'lucide-react';
 import { useState } from 'react';
 
+import { useToast } from '@/components/ui/ToastProvider';
+
 interface ShareButtonProps {
   sessionId?: string | null;
 }
@@ -10,6 +12,7 @@ interface ShareButtonProps {
 type ShareState = 'idle' | 'loading' | 'copied' | 'error';
 
 export function ShareButton({ sessionId }: ShareButtonProps) {
+  const { toast } = useToast();
   const [shareState, setShareState] = useState<ShareState>('idle');
   const [shareUrl, setShareUrl] = useState<string | null>(null);
 
@@ -29,9 +32,11 @@ export function ShareButton({ sessionId }: ShareButtonProps) {
       setShareUrl(url);
       await navigator.clipboard.writeText(url);
       setShareState('copied');
+      toast('Share link copied to clipboard', 'success');
       setTimeout(() => setShareState('idle'), 3000);
     } catch {
       setShareState('error');
+      toast('Could not create share link', 'error');
       setTimeout(() => setShareState('idle'), 3000);
     }
   };
@@ -48,7 +53,7 @@ export function ShareButton({ sessionId }: ShareButtonProps) {
         {(shareState === 'idle' || shareState === 'error') && <Share2 className="h-4 w-4" />}
         {shareState === 'loading' ? 'Generating...'
           : shareState === 'copied' ? 'Link copied!'
-          : shareState === 'error' ? 'Failed — try again'
+          : shareState === 'error' ? 'Failed. Try again.'
           : 'Share'}
       </button>
 

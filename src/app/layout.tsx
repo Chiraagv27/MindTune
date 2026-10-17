@@ -1,33 +1,40 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Plus_Jakarta_Sans } from "next/font/google";
+import { CookieConsent } from "@/components/consent/CookieConsent";
+import { RecentPromptsDrawerHost } from "@/components/RecentPromptsDrawerHost";
+import { SiteJsonLd } from "@/components/seo/JsonLd";
+import { ToastProvider } from "@/components/ui/ToastProvider";
+import { rootMetadata } from "@/lib/seo/metadata";
 import "./globals.css";
+import "./landing.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const jakarta = Plus_Jakarta_Sans({
+  variable: "--font-jakarta",
   subsets: ["latin"],
+  display: "swap",
+  preload: true,
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
+  preload: true,
 });
 
-export const metadata: Metadata = {
-  title: "MindTune",
-  description: "Paste a messy prompt, get a cleaner tuned one",
-};
+export const metadata: Metadata = rootMetadata;
 
-function ThemeInitScript() {
-  // Sets html.dark before paint to avoid flash.
+function AppInitScript() {
   const code = `
 (() => {
   try {
-    const key = 'promptperfect:theme';
-    const saved = localStorage.getItem(key);
-    const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const theme = (saved === 'light' || saved === 'dark') ? saved : (systemDark ? 'dark' : 'light');
-    if (theme === 'dark') document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
+    document.documentElement.classList.add('dark');
+    document.documentElement.style.colorScheme = 'dark';
+    const palettes = ['tranquil','romantic','playful','neutral','monochrome','seasonal','nature'];
+    const savedPalette = localStorage.getItem('promptperfect:palette');
+    if (palettes.indexOf(savedPalette) >= 0) document.documentElement.dataset.palette = savedPalette;
+    else delete document.documentElement.dataset.palette;
+    document.documentElement.style.setProperty('--mindtune-delay', -(Date.now() % 8000) + 'ms');
   } catch {}
 })();`.trim();
 
@@ -40,14 +47,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className="dark" suppressHydrationWarning style={{ colorScheme: 'dark' }}>
       <head>
-        <ThemeInitScript />
+        <AppInitScript />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${jakarta.variable} ${geistMono.variable} font-sans antialiased`}
       >
-        {children}
+        <SiteJsonLd />
+        <ToastProvider>
+          {children}
+          <RecentPromptsDrawerHost />
+          <CookieConsent />
+        </ToastProvider>
       </body>
     </html>
   );

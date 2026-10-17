@@ -69,14 +69,7 @@ export function PromptOutput({ completion, isLoading, onExplanation }: PromptOut
       <div className="min-h-[420px] w-full overflow-auto rounded-3xl border border-zinc-200 bg-white/70 px-5 py-4 text-sm leading-7 text-zinc-900 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/50 dark:text-zinc-50">
         <div className="whitespace-pre-wrap break-words">
           {displayText}
-          {isLoading ? (
-            <span
-              className="inline-block animate-[cursor-blink_1s_ease-in-out_infinite]"
-              aria-hidden
-            >
-              |
-            </span>
-          ) : null}
+          {isLoading ? <span className="text-zinc-500"> Loading…</span> : null}
         </div>
       </div>
     </div>
